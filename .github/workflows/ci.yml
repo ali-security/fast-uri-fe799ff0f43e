@@ -1,18 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches:
-     - main
-     - next
-     - 'v*'
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-  pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional tape file glob to narrow the unit test run.'
+        required: false
+        default: ''
+        type: string
 
 # This allows a subsequently queued workflow run to interrupt previous runs
 concurrency:
@@ -26,6 +21,7 @@ jobs:
   test-regression-check-node10:
     name: Test compatibility with Node.js 10
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -52,14 +48,23 @@ jobs:
           cp ./index.js ./node_modules/fast-uri/index.js
 
       - name: Run tests
+        if: ${{ inputs.test-filter == '' }}
         run: |
           npm run test:unit
+        env:
+          NODE_OPTIONS: no-network-family-autoselection
+
+      - name: Run filtered tests
+        if: ${{ inputs.test-filter != '' }}
+        run: |
+          npx tape ${{ inputs.test-filter }}
         env:
           NODE_OPTIONS: no-network-family-autoselection
 
   test-browser:
     name: Test browser compatibility
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -93,14 +98,79 @@ jobs:
         run: |
           npm run test:browser:${{ matrix.browser }}
 
+  # Inlined from fastify/workflows/.github/workflows/plugins-ci.yml@v6 (the
+  # reusable workflow this repo called with node-versions '["16","18","20","22","24"]').
+  # A `uses:` job cannot declare `timeout-minutes`, which the fork build requires,
+  # so the reusable workflow's `test` job is reproduced here verbatim -- same
+  # matrix, same exclusions, same `npm test` command. Its lint/license-check
+  # quality gate and its dependabot automerge job are dropped: neither runs the
+  # package's tests and automerge needs credentials the fork does not have.
   test:
+    name: Test
     needs:
       - test-regression-check-node10
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     permissions:
-      contents: write
-      pull-requests: write
-    uses: fastify/workflows/.github/workflows/plugins-ci.yml@v6
-    with:
-      license-check: true
-      lint: true
-      node-versions: '["16", "18", "20", "22", "24"]'
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['16', '18', '20', '22', '24']
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        exclude:
+          - os: macos-latest
+            node-version: '16'
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          check-latest: true
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm i --ignore-scripts
+
+      - name: Run tests
+        if: ${{ inputs.test-filter == '' }}
+        run: npm test
+
+      - name: Run filtered tests
+        if: ${{ inputs.test-filter != '' }}
+        run: npx tape ${{ inputs.test-filter }}
+
+  # Upstream CI only tests; it never produces the published release artifact.
+  # This job adds the missing pack + upload so the npm tarball reaches the build.
+  pack:
+    name: Pack npm tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          check-latest: true
+
+      - name: Use the npm release that packed the published tarball
+        run: npm i -g npm@11.13.0
+
+      - name: Pack
+        run: npm pack
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: 'fast-uri-*.tgz'
+          if-no-files-found: error
