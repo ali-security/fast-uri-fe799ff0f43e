@@ -131,3 +131,115 @@ test('normalize does not double-decode %2540 into a live @', (t) => {
   t.plan(1)
   t.notEqual(parsed.host, 'trusted.com@evil.com', 'http://trusted.com%2540evil.com/')
 })
+
+test('parse canonicalises IDN / Unicode hosts to their ASCII form', (t) => {
+  const cases = [
+    {
+      input: 'http://127。0。0。1/',
+      expectedHost: '127.0.0.1',
+      description: 'full-width ideographic stops as octet separators'
+    },
+    {
+      input: 'http://ｅxample.com/',
+      expectedHost: 'example.com',
+      description: 'fullwidth e as first letter'
+    },
+    {
+      input: 'http://納豆.example.org/',
+      expectedHost: 'xn--99zt52a.example.org',
+      description: 'CJK label requiring punycode'
+    }
+  ]
+
+  t.plan(cases.length * 2)
+
+  cases.forEach(({ input, expectedHost, description }) => {
+    const parsed = fastURI.parse(input)
+    t.notOk(parsed.error, `parse should not set error: ${description}`)
+    t.equal(parsed.host, expectedHost, `host canonicalised to ASCII: ${description}`)
+  })
+})
+
+test('parse canonicalises every Unicode full stop variant used as a label separator', (t) => {
+  const cases = [
+    ['http://127。0。0。1/', '127.0.0.1', 'U+3002 ideographic full stop'],
+    ['http://127．0．0．1/', '127.0.0.1', 'U+FF0E fullwidth full stop'],
+    ['http://127｡0｡0｡1/', '127.0.0.1', 'U+FF61 halfwidth ideographic full stop'],
+    ['http://example。com/', 'example.com', 'U+3002 separating a registrable domain'],
+    ['http://ＥＸＡＭＰＬＥ.com/', 'example.com', 'fullwidth uppercase letters'],
+    ['http://納豆.example.org/', 'xn--99zt52a.example.org', 'CJK label requiring punycode']
+  ]
+
+  t.plan(cases.length * 2)
+
+  cases.forEach(([input, expectedHost, description]) => {
+    const parsed = fastURI.parse(input)
+    t.notOk(parsed.error, `parse should not set error: ${description}`)
+    t.equal(parsed.host, expectedHost, `host canonicalised to ASCII: ${description}`)
+  })
+})
+
+test('parse canonicalises non-dotted-decimal IPv4 hosts a client would resolve to loopback', (t) => {
+  const cases = [
+    ['http://0x7f.0.0.1/', '127.0.0.1', 'hexadecimal first octet'],
+    ['http://2130706433/', '127.0.0.1', 'decimal integer address'],
+    ['http://0177.0.0.1/', '127.0.0.1', 'octal first octet'],
+    ['http://127.1/', '127.0.0.1', 'shorthand two-part address']
+  ]
+
+  t.plan(cases.length * 2)
+
+  cases.forEach(([input, expectedHost, description]) => {
+    const parsed = fastURI.parse(input)
+    t.notOk(parsed.error, `parse should not set error: ${description}`)
+    t.equal(parsed.host, expectedHost, `host canonicalised to loopback: ${description}`)
+  })
+})
+
+test('parse host never desynchronises from the WHATWG URL parser a client would use', (t) => {
+  const cases = [
+    'http://127。0。0。1/',
+    'http://ｅxample.com/',
+    'http://納豆.example.org/',
+    'https://127。0。0。1/',
+    'ws://ｅxample.com/chat',
+    'wss://納豆.example.org/chat',
+    'http://0x7f.0.0.1/',
+    'http://2130706433/'
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach((input) => {
+    t.equal(fastURI.parse(input).host, new URL(input).hostname, input)
+  })
+})
+
+test('normalize canonicalises Unicode hosts so host-based policy checks cannot be bypassed', (t) => {
+  const cases = [
+    ['http://127。0。0。1/', 'http://127.0.0.1/'],
+    ['https://127。0。0。1/admin', 'https://127.0.0.1/admin'],
+    ['http://ｅxample.com/', 'http://example.com/'],
+    ['http://納豆.example.org/', 'http://xn--99zt52a.example.org/']
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach(([input, expected]) => {
+    t.equal(fastURI.normalize(input), expected, input)
+  })
+})
+
+test('equal treats a Unicode host and its ASCII form as the same origin', (t) => {
+  const pairs = [
+    ['http://127。0。0。1/', 'http://127.0.0.1/'],
+    ['http://ｅxample.com/', 'http://example.com/'],
+    ['http://納豆.example.org/', 'http://xn--99zt52a.example.org/']
+  ]
+
+  t.plan(pairs.length)
+
+  pairs.forEach(([left, right]) => {
+    t.equal(fastURI.equal(left, right, {}), true, `${left} == ${right}`)
+  })
+})
